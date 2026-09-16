@@ -5,7 +5,7 @@ from datetime import datetime
 import json
 from openai import OpenAI
 
-# 페이지 기본 설정 (모바일 최적화)
+# 페이지 기본 설정
 st.set_page_config(page_title="나만의 헬스 파트너", page_icon="🩺", layout="centered")
 
 # --- DB 초기화 ---
@@ -14,6 +14,7 @@ DB_FILE = "health_tracker.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
+    # 일상 기록 테이블
     c.execute('''
         CREATE TABLE IF NOT EXISTS health_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -25,10 +26,20 @@ def init_db():
             ai_cause TEXT
         )
     ''')
+    # 사용자 정의 규칙 테이블
     c.execute('''
         CREATE TABLE IF NOT EXISTS user_rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             rule TEXT,
+            created_at TEXT
+        )
+    ''')
+    # 기존 질환 / 병력 관리 테이블 (신규 추가)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS user_diseases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            disease_name TEXT,
+            note TEXT,
             created_at TEXT
         )
     ''')
@@ -37,18 +48,56 @@ def init_db():
 
 init_db()
 
-# --- 사이드바: 설정 ---
+# --- 사이드바: 설정 및 기존질환 관리 ---
 st.sidebar.title("⚙️ 설정 및 프로필")
 
-# Streamlit Secrets 또는 입력창에서 API 키 로드
+# OpenAI API Key 입력
 api_key = st.sidebar.text_input("OpenAI API Key", type="password", help="sk-... 형태의 키를 입력하세요")
 if not api_key and "OPENAI_API_KEY" in st.secrets:
     api_key = st.secrets["OPENAI_API_KEY"]
 
-user_profile = st.sidebar.text_area(
-    "기존 질환 / 병원 진단 / 처방약 / 이력",
-    value="예: 편두통 진단 이력 있음, 필요시 타이레놀 복용, 비타민D 복용 중"
-)
+st.sidebar.markdown("---")
+st.sidebar.subheader("🏥 기존 질환 / 병력 관리")
+
+# 질환 추가 입력 폼
+with st.sidebar.form("disease_form", clear_on_submit=True):
+    new_disease = st.text_input("질환/증상명", placeholder="예: 편두통, 역류성 식도염")
+    disease_note = st.text_input("상세 내용/복용약", placeholder="예: 필요시 타이레놀 복용중")
+    add_disease_btn = st.form_submit_button("질환 추가하기")
+
+if add_disease_btn and new_disease:
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT INTO user_diseases (disease_name, note, created_at) VALUES (?, ?, ?)",
+              (new_disease, disease_note, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+    st.sidebar.success(f"'{new_disease}' 추가 완료!")
+
+# 등록된 기존 질환 목록 표시 및 삭제 기능
+conn = sqlite3.connect(DB_FILE)
+diseases_df = pd.read_sql_query("SELECT * FROM user_diseases ORDER BY id DESC", conn)
+conn.close()
+
+user_profile_text = ""
+if not diseases_df.empty:
+    st.sidebar.write("📌 **현재 등록된 질환 목록:**")
+    profile_items = []
+    for idx, row in diseases_df.iterrows():
+        item_str = f"- {row['disease_name']} ({row['note']})" if row['note'] else f"- {row['disease_name']}"
+        profile_items.append(item_str)
+        col1, col2 = st.sidebar.columns([3, 1])
+        col1.caption(item_str)
+        if col2.button("삭제", key=f"del_dis_{row['id']}"):
+            conn = sqlite3.connect(DB_FILE)
+            c = conn.cursor()
+            c.execute("DELETE FROM user_diseases WHERE id = ?", (row['id'],))
+            conn.commit()
+            conn.close()
+            st.rerun()
+    user_profile_text = "\n".join(profile_items)
+else:
+    st.sidebar.caption("등록된 기존 질환이 없습니다.")
 
 # --- 증상 선택지 데이터 정의 ---
 SYMPTOM_OPTIONS = {
@@ -56,26 +105,36 @@ SYMPTOM_OPTIONS = {
         "머리가 깨질 듯이 콕콕 쑤신다 (편두통 양상)",
         "뒤통수나 머리 전체가 묵직하게 조인다 (긴장성 두통)",
         "관자놀이 주변이 뻐근하고 당긴다 (안구/근육 피로)",
-        "숙이거나 움직일 때 머리가 울린다"
+        "숙이거나 움직일 때 머리가 울린다",
+        "❓ 잘 모르겠다 / 명확히 설명하기 어려움",
+        "✨ 기존 선택지 중에 없음 (자유 입력에 상세 작성)"
     ],
     "눈아픔": [
         "눈 안쪽이 뻑뻑하고 푹푹 쑤신다",
         "눈 앞이 빠질 것처럼 압박감이 든다",
-        "초점이 잘 안 맞고 눈을 뜨기 힘들다"
+        "초점이 잘 안 맞고 눈을 뜨기 힘들다",
+        "❓ 잘 모르겠다 / 명확히 설명하기 어려움",
+        "✨ 기존 선택지 중에 없음 (자유 입력에 상세 작성)"
     ],
     "복통": [
         "쥐어짜듯 콕콕 찌르는 통증",
         "속이 쓰리고 묵직하게 더부룩함",
-        "아랫배가 팽만하고 알싸하게 아픔 (월경통/장가스)"
+        "아랫배가 팽만하고 알싸하게 아픔 (월경통/장가스)",
+        "❓ 잘 모르겠다 / 명확히 설명하기 어려움",
+        "✨ 기존 선택지 중에 없음 (자유 입력에 상세 작성)"
     ],
     "피로/어지러움": [
         "몸이 물을 흠뻑 적신 듯 묵직하고 무겁다",
         "일어나거나 움직일 때 순간적으로 핑 돈다",
-        "머리가 멍하고 안개가 낀 것 같다 (Brain Fog)"
+        "머리가 멍하고 안개가 낀 것 같다 (Brain Fog)",
+        "❓ 잘 모르겠다 / 명확히 설명하기 어려움",
+        "✨ 기존 선택지 중에 없음 (자유 입력에 상세 작성)"
     ],
     "집중력저하": [
         "글씨나 화면이 눈에 들어오지 않는다",
-        "간단한 사고나 판단이 느려진다"
+        "간단한 사고나 판단이 느려진다",
+        "❓ 잘 모르겠다 / 명확히 설명하기 어려움",
+        "✨ 기존 선택지 중에 없음 (자유 입력에 상세 작성)"
     ]
 }
 
@@ -100,10 +159,15 @@ with tabs[0]:
                 
     if selected_symptoms:
         st.markdown("---")
-        st.write("🔍 **가장 가까운 세부 증상을 고르세요:**")
+        st.write("🔍 **세부 증상을 선택하세요 (복수 선택 가능):**")
         for cat in selected_symptoms:
-            option = st.radio(f"[{cat}] 보기:", SYMPTOM_OPTIONS[cat], key=f"detail_{cat}")
-            symptom_details[cat] = option
+            # st.radio 대신 st.multiselect로 변경하여 중복 선택 허용
+            options = st.multiselect(
+                f"[{cat}] 해당하는 세부 증상을 모두 고르세요:",
+                options=SYMPTOM_OPTIONS[cat],
+                key=f"detail_{cat}"
+            )
+            symptom_details[cat] = options
 
     st.markdown("---")
     st.subheader("2. 서술형 입력 & 코드/규칙 변경 요청")
@@ -111,7 +175,7 @@ with tabs[0]:
     
     free_text = st.text_area(
         "자유 입력 칸",
-        placeholder="예: 오늘 전자기기 6시간 봄. 관자놀이 뻐근함. / 앞으로 월경 3일 전에는 운동 강도를 낮춰서 권장해줘."
+        placeholder="예: 오늘 전자기기 6시간 봄. 관자놀이 뻐근함. / 세부 선택지에 없는 증상 작성 등"
     )
     
     if st.button("🚀 제출 및 AI 원인 분석 받기", type="primary"):
@@ -130,24 +194,25 @@ with tabs[0]:
             prompt = f"""
 너는 사용자의 전담 개인 의사이자 헬스케어 분석가이다.
 
-[사용자 기본 정보]
-{user_profile}
+[사용자 기존 질환 프로필]
+{user_profile_text if user_profile_text else "등록된 질환 없음"}
 
 [사용자가 수동 추가한 시스템 규칙]
 {existing_rules}
 
 [오늘 입력 데이터]
 - 선택 증상: {selected_symptoms}
-- 세부 옵션: {json.dumps(symptom_details, ensure_ascii=False)}
+- 세부 선택 옵션(복수선택됨): {json.dumps(symptom_details, ensure_ascii=False)}
 - 자유 서술 내용: {free_text}
 
 [수행할 작업]
 1. [자유 서술 내용]에 '시스템 규칙/코드 변경 요청'(예: "앞으로 ~해줘", "~할 때 이렇게 바꿔줘")이 포함되어 있는지 판별하라.
    - 요청이 있다면 `rule_update` 필드에 해당 규칙 문장을 요약해서 넣고, 없으면 null로 하라.
 2. 현재 증상 및 입력 내용에 대한 의학적/생체학적 **원인 분석**과 **상세 설명**을 작성하라.
-3. 사용자가 읽기 좋은 **서술형 요약문**을 생성하라 (예: ~해서 ~함. 이는 ~때문으로 보임).
-4. **예상되는 내일 상태** 및 **지금 하면 내일 이렇게 된다는 가능성(Simulation)**을 작성하라.
-5. **운동 추천 및 단기/장기 효과**, 그리고 **컨디션 모니터링 & 권장 행동**을 제시하라.
+3. 사용자가 선택한 '잘 모르겠다' 또는 '선택지 없음' 항목이 있다면 자유 서술 내용을 바탕으로 정밀 추론하라.
+4. 사용자가 읽기 좋은 **서술형 요약문**을 생성하라 (예: ~해서 ~함. 이는 ~때문으로 보임).
+5. **예상되는 내일 상태** 및 **지금 하면 내일 이렇게 된다는 가능성(Simulation)**을 작성하라.
+6. **운동 추천 및 단기/장기 효과**, 그리고 **컨디션 모니터링 & 권장 행동**을 제시하라.
 
 응답은 반드시 아래 JSON 구조로만 출력하라:
 {{
