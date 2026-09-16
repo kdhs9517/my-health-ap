@@ -3,7 +3,8 @@ import sqlite3
 import pandas as pd
 from datetime import datetime
 import json
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
 # 페이지 기본 설정
 st.set_page_config(page_title="나만의 헬스 파트너", page_icon="🩺", layout="centered")
@@ -34,7 +35,7 @@ def init_db():
             created_at TEXT
         )
     ''')
-    # 기존 질환 / 병력 관리 테이블 (신규 추가)
+    # 기존 질환 / 병력 관리 테이블
     c.execute('''
         CREATE TABLE IF NOT EXISTS user_diseases (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,10 +52,10 @@ init_db()
 # --- 사이드바: 설정 및 기존질환 관리 ---
 st.sidebar.title("⚙️ 설정 및 프로필")
 
-# OpenAI API Key 입력
-api_key = st.sidebar.text_input("OpenAI API Key", type="password", help="sk-... 형태의 키를 입력하세요")
-if not api_key and "OPENAI_API_KEY" in st.secrets:
-    api_key = st.secrets["OPENAI_API_KEY"]
+# Gemini API Key 입력
+api_key = st.sidebar.text_input("Gemini API Key", type="password", help="AIzaSy... 형태의 키를 입력하세요")
+if not api_key and "GEMINI_API_KEY" in st.secrets:
+    api_key = st.secrets["GEMINI_API_KEY"]
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🏥 기존 질환 / 병력 관리")
@@ -161,7 +162,6 @@ with tabs[0]:
         st.markdown("---")
         st.write("🔍 **세부 증상을 선택하세요 (복수 선택 가능):**")
         for cat in selected_symptoms:
-            # st.radio 대신 st.multiselect로 변경하여 중복 선택 허용
             options = st.multiselect(
                 f"[{cat}] 해당하는 세부 증상을 모두 고르세요:",
                 options=SYMPTOM_OPTIONS[cat],
@@ -180,9 +180,9 @@ with tabs[0]:
     
     if st.button("🚀 제출 및 AI 원인 분석 받기", type="primary"):
         if not api_key:
-            st.error("OpenAI API Key를 입력하거나 Secrets에 등록해주세요.")
+            st.error("Gemini API Key를 입력하거나 Secrets에 GEMINI_API_KEY로 등록해주세요.")
         else:
-            client = OpenAI(api_key=api_key)
+            client = genai.Client(api_key=api_key)
             
             # DB에서 커스텀 규칙 읽기
             conn = sqlite3.connect(DB_FILE)
@@ -214,25 +214,24 @@ with tabs[0]:
 5. **예상되는 내일 상태** 및 **지금 하면 내일 이렇게 된다는 가능성(Simulation)**을 작성하라.
 6. **운동 추천 및 단기/장기 효과**, 그리고 **컨디션 모니터링 & 권장 행동**을 제시하라.
 
-응답은 반드시 아래 JSON 구조로만 출력하라:
-{{
-    "rule_update": "추가할 규칙 문장 (없으면 null)",
-    "summary": "일기장 형태의 증상 및 정황 요약문",
-    "cause": "의학적/생체학적 예상 원인 분석",
-    "tomorrow_prediction": "내일 상태 예측 및 시뮬레이션",
-    "recommendation": "권장 행동 및 컨디션 모니터링 수칙",
-    "exercise_effect": "운동 시 단기적/장기적 효과 가이드"
-}}
+응답은 반드시 JSON 형식으로만 작성해야 하며, 키 이름은 다음과 같아야 한다:
+- rule_update: 추가할 규칙 문장 (없으면 null)
+- summary: 일기장 형태의 증상 및 정황 요약문
+- cause: 의학적/생체학적 예상 원인 분석
+- tomorrow_prediction: 내일 상태 예측 및 시뮬레이션
+- recommendation: 권장 행동 및 컨디션 모니터링 수칙
+- exercise_effect: 운동 시 단기적/장기적 효과 가이드
 """
-            with st.spinner("AI가 분석 중입니다..."):
+            with st.spinner("Gemini AI가 분석 중입니다..."):
                 try:
-                    response = client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[{"role": "system", "content": "You are a helpful medical wellness analyst."},
-                                  {"role": "user", "content": prompt}],
-                        response_format={"type": "json_object"}
+                    response = client.models.generate_content(
+                        model='gemini-2.5-flash',
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                        ),
                     )
-                    res_json = json.loads(response.choices[0].message.content)
+                    res_json = json.loads(response.text)
                     
                     # 규칙 업데이트 요청 저장
                     if res_json.get("rule_update"):
