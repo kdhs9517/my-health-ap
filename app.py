@@ -225,7 +225,7 @@ with tabs[0]:
             with st.spinner("Gemini AI가 분석 중입니다..."):
                 try:
                     response = client.models.generate_content(
-                        model='gemini-1.5-flash',
+                        model='models/gemini-2.0-flash',
                         contents=prompt,
                         config=types.GenerateContentConfig(
                             response_mime_type="application/json",
